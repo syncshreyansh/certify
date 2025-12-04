@@ -7,6 +7,102 @@
 let currentRole = null;
 let userAuthenticated = false;
 let otpSent = false;
+// Blockchain + Email + QR state
+const ABI = [
+        {
+            "inputs": [],
+            "stateMutability": "nonpayable",
+            "type": "constructor"
+        },
+        {
+            "anonymous": false,
+            "inputs": [
+                {
+                    "indexed": true,
+                    "internalType": "bytes32",
+                    "name": "docHash",
+                    "type": "bytes32"
+                },
+                {
+                    "indexed": false,
+                    "internalType": "string",
+                    "name": "studentId",
+                    "type": "string"
+                },
+                {
+                    "indexed": false,
+                    "internalType": "string",
+                    "name": "docType",
+                    "type": "string"
+                }
+            ],
+            "name": "DocumentIssued",
+            "type": "event"
+        },
+        {
+            "inputs": [
+                {
+                    "internalType": "bytes32",
+                    "name": "",
+                    "type": "bytes32"
+                }
+            ],
+            "name": "documents",
+            "outputs": [
+                { "internalType": "bytes32", "name": "docHash", "type": "bytes32" },
+                { "internalType": "string", "name": "studentId", "type": "string" },
+                { "internalType": "string", "name": "studentName", "type": "string" },
+                { "internalType": "string", "name": "docType", "type": "string" },
+                { "internalType": "string", "name": "courseName", "type": "string" },
+                { "internalType": "string", "name": "docData", "type": "string" },
+                { "internalType": "string", "name": "issuerName", "type": "string" },
+                { "internalType": "uint256", "name": "issuedDate", "type": "uint256" },
+                { "internalType": "bool", "name": "isValid", "type": "bool" }
+            ],
+            "stateMutability": "view",
+            "type": "function"
+        },
+        {
+            "inputs": [ { "internalType": "string", "name": "_studentId", "type": "string" } ],
+            "name": "getStudentDocuments",
+            "outputs": [ { "internalType": "bytes32[]", "name": "", "type": "bytes32[]" } ],
+            "stateMutability": "view",
+            "type": "function"
+        },
+        {
+            "inputs": [
+                { "internalType": "bytes32", "name": "_docHash", "type": "bytes32" },
+                { "internalType": "string", "name": "_studentId", "type": "string" },
+                { "internalType": "string", "name": "_studentName", "type": "string" },
+                { "internalType": "string", "name": "_docType", "type": "string" },
+                { "internalType": "string", "name": "_courseName", "type": "string" },
+                { "internalType": "string", "name": "_docData", "type": "string" },
+                { "internalType": "string", "name": "_issuerName", "type": "string" }
+            ],
+            "name": "issueDocument",
+            "outputs": [],
+            "stateMutability": "nonpayable",
+            "type": "function"
+        },
+        { "inputs": [], "name": "owner", "outputs": [ { "internalType": "address", "name": "", "type": "address" } ], "stateMutability": "view", "type": "function" },
+        {
+            "inputs": [ { "internalType": "bytes32", "name": "_docHash", "type": "bytes32" } ],
+            "name": "verifyDocument",
+            "outputs": [
+                { "internalType": "bool", "name": "isValid", "type": "bool" },
+                { "internalType": "string", "name": "studentName", "type": "string" },
+                { "internalType": "string", "name": "docType", "type": "string" },
+                { "internalType": "string", "name": "docData", "type": "string" },
+                { "internalType": "string", "name": "issuerName", "type": "string" },
+                { "internalType": "uint256", "name": "issuedDate", "type": "uint256" }
+            ],
+            "stateMutability": "view",
+            "type": "function"
+        }
+    ];
+let contract = null;
+let provider = null;
+let signer = null;
 
 // ============================================
 // NAVIGATION FUNCTIONS
@@ -43,9 +139,11 @@ function resetAllForms() {
     document.getElementById('docTypeSelect').value = '';
 
     document.getElementById('verificationResult').classList.add('hidden');
-
-    document.getElementById('otpStep1').classList.remove('hidden');
-    document.getElementById('otpStep2').classList.add('hidden');
+    // email OTP UI
+    const s1 = document.getElementById('emailOtpStep1');
+    const s2 = document.getElementById('emailOtpStep2');
+    if (s1) s1.classList.remove('hidden');
+    if (s2) s2.classList.add('hidden');
     document.getElementById('portfolioView').classList.add('hidden');
 }
 
@@ -77,18 +175,63 @@ function showDocumentForm(type) {
  */
 function handleCertificateSubmit(e) {
     e.preventDefault();
-
     const formData = {
-        name: document.getElementById('cert_name').value,
+        studentName: document.getElementById('cert_name').value,
         studentId: document.getElementById('cert_studentId').value,
-        purpose: document.getElementById('cert_purpose').value,
-        type: document.getElementById('cert_type').value,
-        mobile: document.getElementById('cert_mobile').value,
-        file: document.getElementById('cert_upload').files[0],
+        docType: 'Certificate',
+        courseName: document.getElementById('cert_purpose').value,
+        docData: document.getElementById('cert_type').value,
+        issuerName: 'Axis College',
+        studentEmail: document.getElementById('cert_email').value,
+        file: document.getElementById('cert_upload').files[0]
     };
 
-    console.log('Certificate Form Data:', formData);
-    alert('Certificate issued successfully! (Placeholder)');
+    // If blockchain not connected, warn
+    if (!contract) {
+        alert('Please connect your wallet first!');
+        return;
+    }
+
+    (async () => {
+        try {
+            const dataString = JSON.stringify(formData);
+            const hashBytes = ethers.utils.id(dataString);
+
+            const submitBtn = e.target.querySelector('button[type="submit"]');
+            if (submitBtn) {
+                submitBtn.disabled = true;
+                submitBtn.textContent = 'Issuing to Blockchain...';
+            }
+
+            const tx = await contract.issueDocument(
+                hashBytes,
+                formData.studentId,
+                formData.studentName,
+                formData.docType,
+                formData.courseName,
+                formData.docData,
+                formData.issuerName
+            );
+
+            await tx.wait();
+
+            showSuccessResult(hashBytes, formData.studentEmail);
+
+            e.target.reset();
+            if (submitBtn) {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Issue Certificate';
+            }
+        } catch (err) {
+            console.error('Blockchain error:', err);
+            alert('Failed to issue certificate: ' + (err && err.message ? err.message : err));
+            const submitBtn = e.target.querySelector('button[type="submit"]');
+            if (submitBtn) {
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Issue Certificate';
+            }
+        }
+    })();
 }
 
 /**
@@ -218,15 +361,37 @@ function verifyDocument() {
         return;
     }
 
-    resultDiv.classList.remove('hidden');
-    resultDiv.innerHTML = `
-        <h3>Verification Result</h3>
-        <p><strong>Status:</strong> Valid</p>
-        <p><strong>Document Type:</strong> Certificate</p>
-        <p><strong>Issued To:</strong> John Doe</p>
-        <p><strong>Issued Date:</strong> 2024-01-15</p>
-        <p><strong>Issuer:</strong> Axis Colleges</p>
-    `;
+    if (!contract) {
+        alert('Please connect your wallet first!');
+        return;
+    }
+
+    (async () => {
+        try {
+            resultDiv.classList.remove('hidden');
+            resultDiv.innerHTML = '<p>Verifying on blockchain...</p>';
+
+            const result = await contract.verifyDocument(hash);
+
+            // Expect result to have isValid and other fields
+            if (result && result.isValid) {
+                resultDiv.innerHTML = `
+                    <h3>✅ Verification Result</h3>
+                    <p><strong>Status:</strong> Valid</p>
+                    <p><strong>Student Name:</strong> ${result.studentName}</p>
+                    <p><strong>Document Type:</strong> ${result.docType}</p>
+                    <p><strong>Course/Purpose:</strong> ${result.docData}</p>
+                    <p><strong>Issuer:</strong> ${result.issuerName}</p>
+                    <p><strong>Issued Date:</strong> ${new Date(Number(result.issuedDate) * 1000).toLocaleDateString()}</p>
+                `;
+            } else {
+                resultDiv.innerHTML = '<h3>❌ Document Not Found</h3><p>This document hash is not registered on the blockchain.</p>';
+            }
+        } catch (err) {
+            console.error('Verification error:', err);
+            alert('Verification failed: ' + (err && err.message ? err.message : err));
+        }
+    })();
 }
 
 // ============================================
@@ -338,17 +503,27 @@ document.addEventListener('DOMContentLoaded', function () {
  */
 async function connectWallet() {
     if (!window.ethereum) {
-        alert('MetaMask not detected. Please install MetaMask or use a compatible wallet.');
+        alert('MetaMask not detected. Please install MetaMask!');
         return;
     }
 
     try {
         const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+        provider = new ethers.providers.Web3Provider(window.ethereum);
+        signer = provider.getSigner();
+        contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
+
         if (accounts && accounts.length > 0) {
             setCurrentAccount(accounts[0]);
         }
+
+        const network = await provider.getNetwork();
+        if (network.chainId !== 31337 && network.chainId !== 1337) {
+            alert('Please switch MetaMask network to Localhost (Hardhat) or Ganache');
+        }
     } catch (err) {
         console.error('Wallet connection failed', err);
+        alert('Failed to connect wallet: ' + (err && err.message ? err.message : err));
     }
 }
 
@@ -357,11 +532,14 @@ async function connectWallet() {
  * TODO: Implement Web3/Ethers.js initialization
  */
 async function initializeProvider() {
-    // Basic provider initialization using window.ethereum.
+    // If wallet already connected, initialize ethers provider and contract
     if (window.ethereum) {
         try {
             const accounts = await window.ethereum.request({ method: 'eth_accounts' });
             if (accounts && accounts.length > 0) {
+                provider = new ethers.providers.Web3Provider(window.ethereum);
+                signer = provider.getSigner();
+                contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, signer);
                 setCurrentAccount(accounts[0]);
             } else {
                 updateWalletUI(null);
@@ -393,7 +571,174 @@ async function initializeProvider() {
  * TODO: Implement smart contract interaction
  */
 async function issueToBlockchain(documentData) {
-    // Implementation pending
+    if (!contract) throw new Error('Wallet not connected');
+    const dataString = JSON.stringify(documentData);
+    const hashBytes = ethers.utils.id(dataString);
+    const tx = await contract.issueDocument(
+        hashBytes,
+        documentData.studentId,
+        documentData.studentName,
+        documentData.docType,
+        documentData.courseName,
+        documentData.docData,
+        documentData.issuerName
+    );
+    await tx.wait();
+    return hashBytes;
+}
+
+// Disconnect wallet
+async function disconnectWallet() {
+    currentAccount = null;
+    contract = null;
+    provider = null;
+    signer = null;
+    updateWalletUI(null);
+    alert('Wallet disconnected');
+}
+
+// Display success overlay and QR
+function showSuccessResult(hash, email) {
+    const resultDiv = document.getElementById('adminResult');
+    const hashDisplay = document.getElementById('generatedHash');
+    const emailStatus = document.getElementById('emailStatus');
+
+    hashDisplay.textContent = hash;
+
+    document.getElementById('qrcode').innerHTML = '';
+    new QRCode(document.getElementById('qrcode'), {
+        text: hash,
+        width: 200,
+        height: 200
+    });
+
+    resultDiv.classList.remove('hidden');
+    emailStatus.textContent = `📧 Document details sent to ${email}`;
+}
+
+function closeAdminResult() {
+    const resultDiv = document.getElementById('adminResult');
+    if (resultDiv) resultDiv.classList.add('hidden');
+}
+
+function copyGeneratedHash() {
+    const el = document.getElementById('generatedHash');
+    if (!el) return;
+    const hash = el.textContent;
+    navigator.clipboard.writeText(hash);
+    alert('Hash copied to clipboard!');
+}
+
+function downloadQR() {
+    const qrCanvas = document.querySelector('#qrcode canvas');
+    if (!qrCanvas) { alert('QR not found'); return; }
+    const url = qrCanvas.toDataURL('image/png');
+    const link = document.createElement('a');
+    link.download = 'document-qr.png';
+    link.href = url;
+    link.click();
+}
+
+// QR scanning from uploaded image
+function scanQRCode(input) {
+    const file = input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        const img = new Image();
+        img.onload = function() {
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width;
+            canvas.height = img.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const code = jsQR(imageData.data, imageData.width, imageData.height);
+            if (code) {
+                document.getElementById('verifyHash').value = code.data;
+                alert('QR Code scanned successfully!');
+            } else {
+                alert('No QR code found in image');
+            }
+        };
+        img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+}
+
+// Email OTP functions using EmailJS
+function sendEmailOTP() {
+    const email = document.getElementById('userEmail').value;
+    if (!email) { alert('Enter email'); return; }
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    sessionStorage.setItem('emailOTP', otp);
+    // Initialize EmailJS (replace PUBLIC_KEY below)
+    try { emailjs.init('YOUR_EMAILJS_PUBLIC_KEY'); } catch (e) {}
+    emailjs.send('YOUR_SERVICE_ID', 'YOUR_TEMPLATE_ID', {
+        to_email: email,
+        otp_code: otp,
+        message: `Your OTP for document verification is: ${otp}`
+    }).then(() => {
+        alert('OTP sent to your email');
+        document.getElementById('emailOtpStep1').classList.add('hidden');
+        document.getElementById('emailOtpStep2').classList.remove('hidden');
+    }).catch(err => {
+        console.error('EmailJS error', err);
+        alert('Failed to send OTP via email');
+    });
+}
+
+function verifyEmailOTP() {
+    const enteredOTP = document.getElementById('emailOtpInput').value;
+    const storedOTP = sessionStorage.getItem('emailOTP');
+    if (enteredOTP === storedOTP) {
+        document.getElementById('emailOtpStep2').classList.add('hidden');
+        document.getElementById('portfolioView').classList.remove('hidden');
+        loadUserDocuments();
+    } else {
+        alert('Invalid OTP');
+    }
+}
+
+// Helper to convert file to base64 (for future IPFS/upload integrations)
+function convertFileToBase64(file) {
+    return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(reader.result);
+        reader.readAsDataURL(file);
+    });
+}
+
+// Load user documents from contract
+async function loadUserDocuments() {
+    if (!contract) { alert('Please connect wallet first!'); return; }
+    const studentId = document.getElementById('userEmail')?.value || '';
+    try {
+        const hashes = await contract.getStudentDocuments(studentId);
+        const documentsList = document.getElementById('documentsList');
+        if (!hashes || hashes.length === 0) {
+            documentsList.innerHTML = '<p>No documents found for this student ID.</p>';
+            return;
+        }
+        let html = '';
+        for (const hash of hashes) {
+            const doc = await contract.verifyDocument(hash);
+            html += `
+                <div class="document-card">
+                    <h3>${doc.docType}</h3>
+                    <p><strong>Student:</strong> ${doc.studentName}</p>
+                    <p><strong>Course:</strong> ${doc.docData}</p>
+                    <p><strong>Date:</strong> ${new Date(Number(doc.issuedDate) * 1000).toLocaleDateString()}</p>
+                    <p><strong>Hash:</strong> ${String(hash).slice(0, 20)}...</p>
+                    <button class="submit-btn" onclick="copyHash('${hash}')">Copy Full Hash</button>
+                </div>
+            `;
+        }
+        documentsList.innerHTML = html;
+    } catch (err) {
+        console.error('Failed to load documents:', err);
+        alert('Failed to load documents: ' + (err && err.message ? err.message : err));
+    }
 }
 
 // ============================================
